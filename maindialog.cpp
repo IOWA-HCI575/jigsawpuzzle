@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <opencv2/video/background_segm.hpp>
 
 
 #define IMAGEWIDTH 400
@@ -20,8 +21,79 @@
 #define PUZZLEPIECEWIDTH 50
 #define PUZZLEPIECEHEIGHT 50
 
+#define IMAGE_THRESHOLD 225
+#define MASK_THRESHOLD 240
+#define AREA_THRESHOLD 100
+
+#define DEBUG 1
+
+
 using namespace std;
 using namespace cv;
+
+namespace{
+
+	cv::Mat  extractImageFromBackground(cv::Mat inputImg)
+{
+	int inputWidth = inputImg.rows;
+	int inputHeight = inputImg.cols;	
+
+	cv::Mat grayImg;
+	cv::cvtColor(inputImg,grayImg, CV_BGR2GRAY);
+	cv::threshold(grayImg,grayImg,IMAGE_THRESHOLD,255,0);
+
+#if DEBUG
+	imshow("gray",grayImg);
+#endif
+	cv::Mat whiteBackground = cv::Mat(inputWidth,inputHeight,inputImg.type());
+	whiteBackground.setTo(cv::Scalar(255,255,255));
+
+#if DEBUG
+	imshow("input",inputImg);
+	imshow("background",whiteBackground);
+#endif
+	
+
+	Mat fgMaskMOG2 , output;
+	Ptr<BackgroundSubtractor> pMOG2;
+	pMOG2 = new BackgroundSubtractorMOG2();
+	pMOG2->operator()(whiteBackground, fgMaskMOG2);
+	pMOG2->operator()(grayImg, fgMaskMOG2);
+	cv::threshold(fgMaskMOG2,fgMaskMOG2,MASK_THRESHOLD,255,0);
+#if DEBUG
+	imshow("mask",fgMaskMOG2);
+#endif
+	std::cout << fgMaskMOG2.rows << fgMaskMOG2.cols;
+
+	inputImg.copyTo(output, fgMaskMOG2);
+
+	std::vector<std::vector<cv::Point> > contours;
+	std::vector<cv::Vec4i> hierarchy;
+
+	findContours(fgMaskMOG2,contours,hierarchy,cv::RETR_CCOMP, cv::CHAIN_APPROX_TC89_KCOS);
+
+	cv::Rect brect ;
+	for ( size_t i=0; i<contours.size(); ++i )
+	{		
+		brect = cv::boundingRect(contours[i]);
+		if(brect.area() > AREA_THRESHOLD)
+		{
+			cv::drawContours( output, contours, i, Scalar(0,255,0), 1, 8, hierarchy, 0, Point() ); 
+			break;		
+		}
+	}
+#if DEBUG
+	imshow("bounds",output);
+#endif
+	cv::Mat finalOutput = cv::Mat(inputImg, cv::Range(brect.y,brect.y+brect.height),cv::Range(brect.x,brect.x + brect.width));	
+#if DEBUG
+	imshow("Extracted Image ",finalOutput);
+#endif
+	return finalOutput;
+
+}
+
+}
 
 MainDialog::MainDialog(QWidget *parent)
     : QDialog(parent)
@@ -133,8 +205,11 @@ void MainDialog::process()
     // Templates
 	IplImage* frame = cvLoadImage(m_wholeImagePath.toLocal8Bit(),1);   // whole image	
 	
-	IplImage* temp1 = cvLoadImage(m_puzzlePiecePath.toLocal8Bit(),1);       // piece image
+	cv::Mat inputPiece = cv::imread(m_puzzlePiecePath.toStdString());
 
+	cv::Mat extractedPiece = extractImageFromBackground(inputPiece);
+
+	IplImage* temp1 = new IplImage(extractedPiece); // piece image
 
     // Initialize the images use to store the results after match with the templates
     int w1 = frame->width  - temp1->width  + 1;
@@ -211,7 +286,7 @@ void MainDialog::process()
     //Free memory 
 
     cvDestroyWindow( "Jigsaw puzzles solver" );
-	
-	
 
 }
+
+
