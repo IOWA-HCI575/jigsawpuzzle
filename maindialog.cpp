@@ -3,8 +3,7 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 
-#include "opencv\cv.h"
-#include "opencv\highgui.h"
+
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -13,7 +12,9 @@
 #include <stdio.h>
 #include <math.h>
 #include <opencv2/video/background_segm.hpp>
-
+#include <QClipboard>
+#include <QApplication>
+#include <QMimeData>
 
 #define IMAGEWIDTH 400
 #define IMAGEHEIGHT 300
@@ -33,7 +34,51 @@ using namespace cv;
 
 namespace{
 
-	cv::Mat  extractImageFromBackground(cv::Mat inputImg)
+	//Ref:http://asmaloney.com/2013/11/code/converting-between-cvmat-and-qimage-or-qpixmap/
+	inline cv::Mat QImageToCvMat( const QImage &inImage, bool inCloneImageData = true )
+   {
+      switch ( inImage.format() )
+      {
+         // 8-bit, 4 channel
+         case QImage::Format_RGB32:
+         {
+            cv::Mat  mat( inImage.height(), inImage.width(), CV_8UC4, const_cast<uchar*>(inImage.bits()), inImage.bytesPerLine() );
+ 
+            return (inCloneImageData ? mat.clone() : mat);
+         }
+ 
+         // 8-bit, 3 channel
+         case QImage::Format_RGB888:
+         {
+            if ( !inCloneImageData )
+				std::cout << "ASM::QImageToCvMat() - Conversion requires cloning since we use a temporary QImage";
+ 
+            QImage   swapped = inImage.rgbSwapped();
+ 
+            return cv::Mat( swapped.height(), swapped.width(), CV_8UC3, const_cast<uchar*>(swapped.bits()), swapped.bytesPerLine() ).clone();
+         }
+ 
+         // 8-bit, 1 channel
+         case QImage::Format_Indexed8:
+         {
+            cv::Mat  mat( inImage.height(), inImage.width(), CV_8UC1, const_cast<uchar*>(inImage.bits()), inImage.bytesPerLine() );
+ 
+            return (inCloneImageData ? mat.clone() : mat);
+         }
+ 
+         default:
+            std::cout << "ASM::QImageToCvMat() - QImage format not handled in switch:" << inImage.format();
+            break;
+      }
+ 
+      return cv::Mat();
+   }
+inline cv::Mat QPixmapToCvMat( const QPixmap &inPixmap, bool inCloneImageData = true )
+{
+    return QImageToCvMat( inPixmap.toImage(), inCloneImageData );
+}
+
+cv::Mat  extractImageFromBackground(cv::Mat inputImg)
 {
 	int inputWidth = inputImg.rows;
 	int inputHeight = inputImg.cols;	
@@ -43,14 +88,18 @@ namespace{
 	cv::threshold(grayImg,grayImg,IMAGE_THRESHOLD,255,0);
 
 #if DEBUG
-	imshow("gray",grayImg);
+	imshow("gray scale",grayImg);
+	resizeWindow("gray scale",200,200);
+	moveWindow("gray scale", 100, 100);
 #endif
 	cv::Mat whiteBackground = cv::Mat(inputWidth,inputHeight,inputImg.type());
 	whiteBackground.setTo(cv::Scalar(255,255,255));
 
 #if DEBUG
-	imshow("input",inputImg);
-	imshow("background",whiteBackground);
+	imshow("input image",inputImg);
+	resizeWindow("input image",200,200);
+	moveWindow("input image", 400, 100);
+	//imshow("background",whiteBackground);
 #endif
 	
 
@@ -62,6 +111,8 @@ namespace{
 	cv::threshold(fgMaskMOG2,fgMaskMOG2,MASK_THRESHOLD,255,0);
 #if DEBUG
 	imshow("mask",fgMaskMOG2);
+	resizeWindow("mask",200,200);
+	moveWindow("mask", 100, 400);
 #endif
 	std::cout << fgMaskMOG2.rows << fgMaskMOG2.cols;
 
@@ -84,10 +135,14 @@ namespace{
 	}
 #if DEBUG
 	imshow("bounds",output);
+	resizeWindow("bounds",200,200);
+	moveWindow("bounds", 400, 400);
 #endif
 	cv::Mat finalOutput = cv::Mat(inputImg, cv::Range(brect.y,brect.y+brect.height),cv::Range(brect.x,brect.x + brect.width));	
 #if DEBUG
-	imshow("Extracted Image ",finalOutput);
+	imshow("Extracted Image",finalOutput);
+	resizeWindow("Extracted Image",200,200);
+	moveWindow("Extracted Image",400, 650);
 #endif
 	return finalOutput;
 
@@ -167,6 +222,11 @@ void MainDialog::uploadPuzzlePieceClicked()
          QPixmap pixmap1 = QPixmap::fromImage(image);
          m_puzzlePiece->setPixmap(pixmap1.scaled(QSize(PUZZLEPIECEWIDTH, PUZZLEPIECEHEIGHT)));
          m_detectButton->setEnabled(true);
+		 
+		cv::Mat inputPiece = cv::imread(m_puzzlePiecePath.toStdString());
+
+		m_inputPiece = extractImageFromBackground(inputPiece);
+
      }
 }
 
@@ -187,7 +247,8 @@ void MainDialog::uploadImageClicked()
          m_selectPieceButton->setEnabled(true);
          //m_imageLabel->adjustSize();
          //m_imageLabel->resize(0.5 * m_imageLabel->pixmap()->size());
-
+		 m_inputImage = cvLoadImage(m_wholeImagePath.toLocal8Bit(),1);   // whole image	
+	
      }
 
 }
@@ -195,21 +256,16 @@ void MainDialog::uploadImageClicked()
 
 void MainDialog::process()
 {
-	int rowNum = 8; // number of pieces in each row
-    int colNum = 8; // number of pieces in each col
-	
-	
+
     //Define images to store each frame and results after match with the templates
     IplImage* temp1MatchResult;
-	
+	Mat imageCopy = m_inputImage.clone();
     // Templates
-	IplImage* frame = cvLoadImage(m_wholeImagePath.toLocal8Bit(),1);   // whole image	
-	
-	cv::Mat inputPiece = cv::imread(m_puzzlePiecePath.toStdString());
+	IplImage* frame =  new IplImage(imageCopy);
+	IplImage* temp1 = new IplImage(m_inputPiece); // piece image
 
-	cv::Mat extractedPiece = extractImageFromBackground(inputPiece);
-
-	IplImage* temp1 = new IplImage(extractedPiece); // piece image
+	int rowNum = frame->height/ temp1->height; // number of pieces in each row
+	int colNum = frame->width/temp1->width; // number of pieces in each col
 
     // Initialize the images use to store the results after match with the templates
     int w1 = frame->width  - temp1->width  + 1;
@@ -223,8 +279,8 @@ void MainDialog::process()
     int rowUnitHeight =0;
     int colUnitWidth = 0;
     if (rowNum != 0 && colNum != 0){
-        rowUnitHeight = w2/colNum;
-        colUnitWidth = h2/rowNum;
+        rowUnitHeight = h2/rowNum;
+        colUnitWidth = w2/colNum;
     }
 
     cout<<colUnitWidth<<" "<<rowUnitHeight<<endl;
@@ -257,7 +313,7 @@ void MainDialog::process()
         int offsetx = 0;
         int offsety = 0;
         //Draw red color rectangle around the bird //cvR
-        cvRectangle(frame,cvPoint(max_loc1.x+offsetx, max_loc1.y+offsety), cvPoint(max_loc1.x+offsetx+(temp1->width)*0.55, max_loc1.y+offsety+(temp1->height)*0.5), cvScalar(0, 255, 0 ), 2);
+        cvRectangle(frame,cvPoint(max_loc1.x+offsetx, max_loc1.y+offsety), cvPoint(max_loc1.x+offsetx+(temp1->width), max_loc1.y+offsety+(temp1->height)), cvScalar(0, 255, 0 ), 1);
 
 
         // Get the middle point of the ball template bottom edge
@@ -268,25 +324,49 @@ void MainDialog::process()
 
         //Display frame
         cvShowImage("Jigsaw puzzles solver", frame);
-
+		resizeWindow("Jigsaw puzzles solver", 600,600);
+		moveWindow("Jigsaw puzzles solver",450,100);
         // return the coordinates of each piece.
         int rowLocation =0;
         int colLocation = 0;
         if (x != 0 && y != 0){
-            rowLocation = x/colUnitWidth+1;
-            colLocation = y/rowUnitHeight+1;
+            colLocation= x/colUnitWidth+1;
+            rowLocation = y/rowUnitHeight+1;
             cout<<colLocation<<" "<<rowLocation<<endl;
 			std::ostringstream ss;
 			std::string resultStr;
-			ss << "The puzzle piece fits at Column number " << colLocation << " and Row number " << rowLocation <<std::endl;			
+			ss << "The puzzle piece fits at Row number " << rowLocation << " and column number " << colLocation <<std::endl;			
 			m_result->setText(QString(ss.str().c_str()));
         }
     }
 	
     //Free memory 
 
-    cvDestroyWindow( "Jigsaw puzzles solver" );
+    //cvDestroyWindow( "Jigsaw puzzles solver" );
 
 }
 
-
+void MainDialog::keyPressEvent(QKeyEvent* keyevent)
+{
+	const QClipboard *clipboard = QApplication::clipboard();
+	if(!clipboard)
+		return;
+	const QMimeData *mimeData = clipboard->mimeData();
+	if(!mimeData)
+		return;
+	if (keyevent->modifiers() == Qt::KeyboardModifier::ControlModifier && keyevent->key()==Qt::Key_S)
+    {	
+		if (mimeData->hasImage()) {
+			m_mainImage->setPixmap(qvariant_cast<QPixmap>(mimeData->imageData()));
+			m_selectPieceButton->setEnabled(true);
+			m_inputImage = QPixmapToCvMat(qvariant_cast<QPixmap>(mimeData->imageData()));
+		}		         
+    }else if (keyevent->modifiers() == Qt::KeyboardModifier::ControlModifier && keyevent->key()==Qt::Key_P)
+	{
+		if (mimeData->hasImage()) {
+			m_puzzlePiece->setPixmap(qvariant_cast<QPixmap>(mimeData->imageData()).scaled(QSize(PUZZLEPIECEWIDTH, PUZZLEPIECEHEIGHT)));
+			m_detectButton->setEnabled(true);
+			m_inputPiece = QPixmapToCvMat(qvariant_cast<QPixmap>(mimeData->imageData()));
+		}		         
+	}
+}

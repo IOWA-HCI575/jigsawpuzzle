@@ -6,6 +6,9 @@
 #include <QPushButton>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QKeyEvent>
+#include "opencv\cv.h"
+#include "opencv\highgui.h"
 
 class MainDialog : public QDialog
 {
@@ -19,6 +22,7 @@ private:
 	QString m_puzzlePiecePath;
 
     QLabel* m_result;
+	cv::Mat m_inputImage, m_inputPiece;
 private slots:
     void uploadImageClicked();
     void uploadPuzzlePieceClicked();
@@ -27,6 +31,8 @@ private slots:
 public:
     MainDialog(QWidget *parent = 0);
     ~MainDialog();
+protected:
+	void keyPressEvent(QKeyEvent* keyevent);
 };
 
 #endif // MAINDIALOG_H
